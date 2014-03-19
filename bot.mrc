@@ -1,20 +1,27 @@
-on 1:CONNECT: {
-  irc_open irc irc.icq.com 6667
-}
-on 1:SOCKOPEN:irc: {
-  .alias raw sockwrite -n $sockname $!1-
-  raw NICK Waremechan
-  raw USER Guest "Guest" "Guest" :Guest
-  .alias raw
-}
-on 1:SOCKREAD:irc: {
-  $($irc_read,2)
-}
+; Example usage:
+; --------------
+; on 1:CONNECT: {
+;   irc_open irc irc.icq.com 6667
+; }
+; on 1:SOCKOPEN:irc: {
+;   .alias raw sockwrite -n $sockname $!1-
+;   raw NICK Waremechan
+;   raw USER Guest "Guest" "Guest" :Guest
+;   .alias raw
+; }
+; on 1:SOCKREAD:irc: {
+;   $($irc_read,2)
+; }
+
+
 alias ast_add {
   hadd -m $1 /^(?: $+ $regsubex($2,/[ ]/g,\x20) $+ )$/i $3-
 }
 alias irc_on_connect {
-  .timer 1 $rand(5,60) sockwrite -n $sockname LIST
+  if ($($+(%,$sockname,_c),2)) {
+    raw JOIN $v1
+  }
+  .timer 1 $rand(15,300) sockwrite -n $sockname LIST
 }
 alias irc_before_list {
   var %n = @ $+ $sockname
@@ -35,12 +42,38 @@ alias irc_after_list {
   }
   sockwrite -n $1 JOIN $gettok($line(%n,%s),2,32)
   dline %n %s
-  .timer 1 1 irc_after_list $1
+  .timer 1 $rand(1,5) irc_after_list $1
+}
+alias irc_on_join {
+  var %n = $+(%,$sockname,_c)
+  set $+(%n) $addtok($(%n,2),$1,44)
 }
 alias irc_size {
   var %s = $file($script)
   bread $script 1 %s &b
-  raw PRIVMSG $1 :I'm %s bytes. $iif($compress(&b,b),$bvar(&b,0) when compressed or $encode(&b,mb,0) x 60-byte mime-encoded chunks.)
+  noop $compress(&b,b)
+  raw PRIVMSG $1 :I'm %s bytes, $bvar(&b,0) bytes when compressed, $irc_escape(&b) bytes when compressed+escaped.
+}
+alias irc_compress {
+  var %s = $file($script)
+  bread $script 1 %s &b
+  noop $compress(&b,b)
+  noop $irc_escape(&b)
+  while ($bvar(&b,0) > 0) {
+    raw PRIVMSG $1 : $+ $bvar(&b,1-300).text
+    bcopy -c &b 1 &b 300 -1
+  }
+}
+alias irc_escape {
+  var %x = $bvar($1,0)
+  while (%x > 0) {
+    if ($findtok(0 10 13 32 44 92,$bvar($1,%x),1,32)) {
+      bcopy $1 $calc(%x + 1) $1 %x -1
+      bset -t $1 %x $gettok(\0 \n \r \s \c \\,$v1,32)
+    }
+    dec %x
+  }
+  return $bvar($1,0)
 }
 alias irc_open {
   noop $ast_add($1,PING( .*)?,raw PONG $!regml(1))
@@ -48,7 +81,9 @@ alias irc_open {
   noop $ast_add($1,[^ ]+ 321 .*,irc_before_list)
   noop $ast_add($1,[^ ]+ 322 [^ ]+ ([^ ]+) ([0-9]+) .*,irc_on_list_entry $!regml(1) $!regml(2))
   noop $ast_add($1,[^ ]+ 323 .*,irc_after_list $!sockname)
+  noop $ast_add($1,[^ ]+ 366 [^ ]+ ([^ ]+) .*,irc_on_join $!regml(1))
   noop $ast_add($1,[^ ]+ PRIVMSG (#[^ ]+) :What is your size\?,irc_size $!regml(1))
+  noop $ast_add($1,[^ ]+ PRIVMSG (#[^ ]+) :Compress yourself\!,irc_compress $!regml(1))
   if ($0 > 1) {
     sockopen $1-
   }
